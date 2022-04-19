@@ -1,0 +1,511 @@
+Imports System.Text.RegularExpressions
+
+
+Public Class JSON
+    Public data As Dictionary(Of String, Object)
+
+    Private p_JSONstring
+    Private aj_in_string, aj_in_escape, aj_i_tmp, aj_char_tmp, aj_s_tmp, aj_line_tmp, aj_line, aj_lines, aj_currentlevel, aj_currentkey, aj_currentvalue, aj_newlabel, aj_XmlHttp, aj_RegExp, aj_colonfound
+
+    Public Sub New()
+        data = Collection()
+        aj_RegExp = New Regex("\s{0,}(\S{1}[\s,\S]*\S{1})\s{0,}", RegexOptions.Compiled Or RegexOptions.IgnoreCase)
+
+    End Sub
+    Protected Overrides Sub Finalize()
+        data = Nothing
+        aj_RegExp = Nothing
+    End Sub
+
+    Public Sub loadJSON(inputsource)
+        inputsource = aj_MultilineTrim(inputsource)
+        If Len(inputsource) = 0 Then
+            Call Err.Raise(1, "loadJSON Error", "No data to load")
+            Exit Sub
+        End If
+
+        p_JSONstring = CleanUpJSONstring(inputsource)
+        aj_lines = Split(p_JSONstring, Chr(13) & Chr(10))
+
+        Dim level(99) As Dictionary(Of String, Object)
+
+        aj_currentlevel = 1
+
+        level(aj_currentlevel) = data
+
+        For Each aj_line In aj_lines
+
+            aj_currentkey = ""
+            aj_currentvalue = ""
+            If InStr(aj_line, ":") > 0 Then
+                aj_in_string = False
+                aj_in_escape = False
+                aj_colonfound = False
+
+                For aj_i_tmp = 1 To Len(aj_line)
+                    If aj_in_escape Then
+                        aj_in_escape = False
+                    Else
+                        Select Case Mid(aj_line, aj_i_tmp, 1)
+                            Case """"
+                                aj_in_string = Not aj_in_string
+                            Case ":"
+                                If Not aj_in_escape And Not aj_in_string Then
+                                    aj_currentkey = Left(aj_line, aj_i_tmp - 1)
+                                    aj_currentvalue = Mid(aj_line, aj_i_tmp + 1)
+                                    aj_colonfound = True
+                                    Exit For
+                                End If
+                            Case "\"
+                                aj_in_escape = True
+                        End Select
+                    End If
+                Next
+
+                If aj_colonfound Then
+                    aj_currentkey = aj_Strip(aj_JSONDecode(aj_currentkey), """")
+
+                    If Not level(aj_currentlevel).ContainsKey(aj_currentkey) Then level(aj_currentlevel).Add(aj_currentkey, "")
+                End If
+            End If
+
+            If Right(aj_line, 1) = "{" Or Right(aj_line, 1) = "[" Then
+                If Len(aj_currentkey) = 0 Then aj_currentkey = level(aj_currentlevel).Count
+
+                level(aj_currentlevel).Item(aj_currentkey) = Collection()
+                level(aj_currentlevel + 1) = level(aj_currentlevel).Item(aj_currentkey)
+
+                aj_currentlevel = aj_currentlevel + 1
+                aj_currentkey = ""
+
+            ElseIf Right(aj_line, 1) = "}" Or Right(aj_line, 1) = "]" Or Right(aj_line, 2) = "}," Or Right(aj_line, 2) = "]," Then
+                aj_currentlevel = aj_currentlevel - 1
+            ElseIf Len(Trim(aj_line)) > 0 Then
+                If Len(aj_currentvalue) = 0 Then aj_currentvalue = aj_line
+                aj_currentvalue = getJSONValue(aj_currentvalue)
+
+                If Len(aj_currentkey) = 0 Then aj_currentkey = level(aj_currentlevel).Count
+                level(aj_currentlevel).Item(aj_currentkey) = aj_currentvalue
+            End If
+        Next
+    End Sub
+
+    Public Function Collection() As Dictionary(Of String, Object)
+        Return New Dictionary(Of String, Object)
+    End Function
+
+    Public Function AddToCollection(dictobj)
+        If TypeName(dictobj) <> "Dictionary" Then
+            Call Err.Raise(1, "AddToCollection Error", "Not a collection.")
+            Return String.Empty
+            Exit Function
+        End If
+        aj_newlabel = dictobj.Count
+        dictobj.Add(aj_newlabel, Collection())
+        Return dictobj.item(aj_newlabel)
+    End Function
+
+    Private Function CleanUpJSONstring(aj_originalstring)
+        aj_originalstring = Replace(aj_originalstring, Chr(13) & Chr(10), "")
+        aj_originalstring = Mid(aj_originalstring, 2, Len(aj_originalstring) - 2)
+        aj_in_string = False : aj_in_escape = False : aj_s_tmp = ""
+        For aj_i_tmp = 1 To Len(aj_originalstring)
+            aj_char_tmp = Mid(aj_originalstring, aj_i_tmp, 1)
+            If aj_in_escape Then
+                aj_in_escape = False
+                aj_s_tmp = aj_s_tmp & aj_char_tmp
+            Else
+                Select Case aj_char_tmp
+                    Case "\" : aj_s_tmp = aj_s_tmp & aj_char_tmp : aj_in_escape = True
+                    Case """" : aj_s_tmp = aj_s_tmp & aj_char_tmp : aj_in_string = Not aj_in_string
+                    Case "{", "["
+                        aj_s_tmp = aj_s_tmp & aj_char_tmp & aj_InlineIf(aj_in_string, "", Chr(13) & Chr(10))
+                    Case "}", "]"
+                        aj_s_tmp = aj_s_tmp & aj_InlineIf(aj_in_string, "", Chr(13) & Chr(10)) & aj_char_tmp
+                    Case "," : aj_s_tmp = aj_s_tmp & aj_char_tmp & aj_InlineIf(aj_in_string, "", Chr(13) & Chr(10))
+                    Case Else : aj_s_tmp = aj_s_tmp & aj_char_tmp
+                End Select
+            End If
+        Next
+
+        Dim CleanUpstring = ""
+        aj_s_tmp = Split(aj_s_tmp, Chr(13) & Chr(10))
+        For Each aj_line_tmp In aj_s_tmp
+            aj_line_tmp = Replace(Replace(aj_line_tmp, Chr(10), ""), Chr(13), "")
+            CleanUpstring = CleanUpstring & aj_Trim(aj_line_tmp) & Chr(13) & Chr(10)
+        Next
+
+        Return CleanUpstring
+    End Function
+
+
+    Private Function getJSONValue(ByVal val)
+        val = Trim(val)
+        If Left(val, 1) = ":" Then val = Mid(val, 2)
+        If Right(val, 1) = "," Then val = Left(val, Len(val) - 1)
+        val = Trim(val)
+
+        Select Case val
+            Case "true" : Return True
+            Case "false" : Return False
+            Case "null" : Return String.Empty
+            Case Else
+                If (InStr(val, """") = 0) Then
+                    If IsNumeric(val) Then
+                        Return CDbl(val)
+                    Else
+                        Return val
+                    End If
+                Else
+                    If Left(val, 1) = """" Then val = Mid(val, 2)
+                    If Right(val, 1) = """" Then val = Left(val, Len(val) - 1)
+                    Return aj_JSONDecode(Trim(val))
+                End If
+        End Select
+    End Function
+
+    Private JSONoutput_level
+    Public Function JSONoutput()
+        Dim wrap_dicttype, aj_label
+        JSONoutput_level = 1
+        wrap_dicttype = "[]"
+        For Each aj_label In data
+            If Not aj_IsInt(aj_label) Then wrap_dicttype = "{}"
+        Next
+        Return Left(wrap_dicttype, 1) & Chr(13) & Chr(10) & GetDict(data) & Right(wrap_dicttype, 1)
+    End Function
+
+    Private Function GetDict(objDict)
+        Dim aj_item, aj_keyvals, aj_label, aj_dicttype
+        Dim GetDictString = String.Empty
+        For Each aj_item In objDict
+
+            Select Case Left(TypeName(aj_item.value).ToString, 10)
+                Case "Dictionary"
+
+                    GetDictString = GetDictString & Space(JSONoutput_level * 4)
+
+                    aj_dicttype = "[]"
+                    For Each aj_label In objDict.Item(aj_item.key).Keys
+                        If Not aj_IsInt(aj_label) Then aj_dicttype = "{}"
+                    Next
+                    If aj_IsInt(aj_item.key) Then
+                        GetDictString = GetDictString & (Left(aj_dicttype, 1) & Chr(13) & Chr(10))
+                    Else
+                        GetDictString = GetDictString & ("""" & aj_JSONEncode(aj_item.key) & """" & ": " & Left(aj_dicttype, 1) & Chr(13) & Chr(10))
+                    End If
+                    JSONoutput_level = JSONoutput_level + 1
+
+                    aj_keyvals = objDict.Keys
+                    GetDictString = GetDictString & GetSubDict(objDict.Item(aj_item.key))
+                    JSONoutput_level = JSONoutput_level - 1
+                    GetDictString = GetDictString & Space(JSONoutput_level * 4) & Right(aj_dicttype, 1)
+                    GetDictString = GetDictString & aj_InlineIf(aj_item.key = LastKey(objDict), "", ",")
+                    GetDictString = GetDictString & Chr(13) & Chr(10)
+
+
+                Case Else
+                    aj_keyvals = objDict.Keys
+
+                    GetDictString = GetDictString & Space(JSONoutput_level * 4) & aj_InlineIf(aj_IsInt(aj_item.key), "", """" & aj_JSONEncode(aj_item.key) & """: ")
+                    GetDictString = GetDictString & WriteValue(objDict.Item(aj_item.key)) & aj_InlineIf(aj_item.key = LastKey(objDict), "", ",")
+                    GetDictString = GetDictString & Chr(13) & Chr(10)
+            End Select
+        Next
+
+        Return GetDictString
+    End Function
+
+    Private Function aj_IsInt(val)
+        Return IsNumeric(val) OrElse (TypeName(val) = "Integer" Or TypeName(val) = "Long")
+    End Function
+    Private Function LastKey(objDict) As String
+
+        Dim aj_key
+        Dim st_key = ""
+
+        If IsObjectCollection(objDict) Then
+            For Each aj_key In objDict.Keys
+                st_key = aj_key
+            Next
+        Else
+            st_key = objDict.key
+        End If
+
+
+        Return st_key
+    End Function
+    Private Function GetSubDict(objSubDict)
+        Return GetDict(objSubDict)
+    End Function
+
+    Private Function WriteValue(ByVal val)
+        Select Case TypeName(val)
+            Case "Double", "Integer", "Long" : Return val.ToString.Replace(",", ".")
+            Case "Null" : Return "null"
+            Case "Boolean" : Return aj_InlineIf(val, "true", "false")
+            Case Else : Return """" & aj_JSONEncode(val) & """"
+        End Select
+    End Function
+
+    Private Function aj_JSONEncode(ByVal valstring)
+        valstring = Replace(valstring, "\", "\\")
+        valstring = Replace(valstring, """", "\""")
+        'valstring = Replace(valstring, "/", "\/")
+        valstring = Replace(valstring, Chr(8), "\b")
+        valstring = Replace(valstring, Chr(12), "\f")
+        valstring = Replace(valstring, Chr(10), "\n")
+        valstring = Replace(valstring, Chr(13), "\r")
+        valstring = Replace(valstring, Chr(9), "\t")
+        Return Trim(valstring)
+    End Function
+
+    Private Function aj_JSONDecode(ByVal val)
+        val = Replace(val, "\""", """")
+        val = Replace(val, "\\", "\")
+        val = Replace(val, "\/", "/")
+        val = Replace(val, "\b", Chr(8))
+        val = Replace(val, "\f", Chr(12))
+        val = Replace(val, "\n", Chr(10))
+        val = Replace(val, "\r", Chr(13))
+        val = Replace(val, "\t", Chr(9))
+        Return Trim(val)
+    End Function
+
+    Private Function aj_InlineIf(condition, returntrue, returnfalse)
+        If condition Then Return returntrue Else Return returnfalse
+    End Function
+
+    Private Function aj_Strip(ByVal val, stripper)
+        If Left(val, 1) = stripper Then val = Mid(val, 2)
+        If Right(val, 1) = stripper Then val = Left(val, Len(val) - 1)
+        Return val
+    End Function
+
+    Private Function aj_MultilineTrim(TextData)
+        Return aj_RegExp.Replace(TextData, "$1")
+    End Function
+
+    Private Function aj_Trim(val)
+        Dim aj_TrimString = Trim(val)
+        Do While Left(aj_TrimString, 1) = Chr(9) : aj_TrimString = Mid(aj_TrimString, 2) : Loop
+        Do While Right(aj_TrimString, 1) = Chr(9) : aj_TrimString = Left(aj_TrimString, Len(aj_TrimString) - 1) : Loop
+        Return Trim(aj_TrimString)
+    End Function
+End Class
+
+
+
+Class jsCore
+    Public Collection As Dictionary(Of String, Object)
+    Public Count As Integer
+    Public QuotedVars As Boolean
+    Public Kind As Integer
+
+    Public Sub New()
+        Collection = New Dictionary(Of String, Object)
+        QuotedVars = True
+        Count = 0
+    End Sub
+    Protected Overrides Sub Finalize()
+        Collection = Nothing
+    End Sub
+
+    Public ReadOnly Property Counter As Long
+        Get
+            Count = Count + 1
+            Return (Count - 1)
+
+        End Get
+
+    End Property
+
+
+
+    Public ReadOnly Property PairGet(p) As Dictionary(Of String, Object)
+        Get
+            If String.IsNullOrWhiteSpace(p) Then p = Count - 1
+            If IsObjectCollection(Collection(p)) Then
+                Return Collection(p)
+            Else
+                Return Collection(p)
+            End If
+        End Get
+
+
+    End Property
+
+    Public Sub PairLet(p, v)
+
+        If String.IsNullOrWhiteSpace(p) Then p = Counter
+        Collection(p) = v
+
+    End Sub
+
+    Public Sub PairSet(p, v)
+        If String.IsNullOrWhiteSpace(p) Then p = Counter
+        If TypeName(v) <> "jsCore" Then
+            Call Err.Raise(&HD, "class: Class", "Incompatible types: '" & TypeName(v) & "'")
+        End If
+        Collection(p) = v
+    End Sub
+
+    Public Sub Clean()
+        Collection.Clear()
+    End Sub
+    Public Sub Remove(vProp)
+        Collection.Remove(vProp)
+    End Sub
+    Function jsEncode(str)
+        Dim charmap(127), haystack()
+        charmap(8) = "\b"
+        charmap(9) = "\t"
+        charmap(10) = "\n"
+        charmap(12) = "\f"
+        charmap(13) = "\r"
+        charmap(34) = "\"""
+        charmap(47) = "\/"
+        charmap(92) = "\\"
+        Dim strlen : strlen = Len(str) - 1
+        ReDim haystack(strlen)
+        Dim i, charcode
+        For i = 0 To strlen
+            haystack(i) = Mid(str, i + 1, 1)
+            charcode = AscW(haystack(i)) And 65535
+            If charcode < 127 Then
+                If Not String.IsNullOrWhiteSpace(charmap(charcode)) Then
+                    haystack(i) = charmap(charcode)
+                ElseIf charcode < 32 Then
+                    haystack(i) = "\u" & Right("000" & Hex(charcode), 4)
+                End If
+            Else
+                haystack(i) = "\u" & Right("000" & Hex(charcode), 4)
+            End If
+        Next
+        Return Join(haystack, "")
+    End Function
+    Public Function toJSON(vPair)
+        Dim toJSONString = ""
+
+        Select Case VarType(vPair)
+            Case 0
+                toJSONString = "null"
+            Case 1
+                toJSONString = "null"
+            Case 7
+                toJSONString = """" & CStr(vPair) & """"
+            Case 8
+                toJSONString = """" & jsEncode(vPair) & """"
+            Case 9
+                Dim bFI, i
+                bFI = True
+
+                If vPair.Kind Then toJSONString = toJSONString & "[" Else toJSONString = toJSONString & "{"
+                For Each i In vPair.Collection
+                    If bFI Then bFI = False Else toJSONString = toJSONString & ","
+                    If vPair.Kind Then
+                        toJSONString = toJSONString & toJSON(vPair(i))
+                    Else
+                        If QuotedVars Then
+                            toJSONString = toJSONString & """" & i & """:" & toJSON(vPair(i))
+                        Else
+                            toJSONString = toJSONString & i & ":" & toJSON(vPair(i))
+                        End If
+                    End If
+                Next
+                If vPair.Kind Then toJSONString = toJSONString & "]" Else toJSONString = toJSONString & "}"
+
+            Case 11
+                If vPair Then toJSONString = "true" Else toJSONString = "false"
+            Case 12, 8192, 8204
+                toJSONString = RenderArray(vPair, 1, "")
+            Case Else
+                toJSONString = Replace(vPair, ",", ".")
+        End Select
+
+        Return toJSONString
+    End Function
+    Function RenderArray(arr, depth, parent)
+        Dim first : first = LBound(arr, depth)
+        Dim last : last = UBound(arr, depth)
+        Dim index, rendered
+        Dim limiter : limiter = ","
+        Dim RenderArrayString = "["
+        For index = first To last
+            If index = last Then
+                limiter = ""
+            End If
+            On Error Resume Next
+            Err.Clear()
+            rendered = RenderArray(arr, depth + 1, parent & index & ",")
+            If Err.Number <> 0 Then
+                RenderArrayString = RenderArrayString & toJSON(arr(parent & index)) & limiter
+                On Error GoTo 0
+            Else
+                RenderArrayString = RenderArrayString & rendered & "" & limiter
+            End If
+        Next
+        RenderArrayString = RenderArrayString & "]"
+
+        Return RenderArrayString
+
+    End Function
+    Public ReadOnly Property jsString
+        Get
+            Return toJSON(Me)
+        End Get
+
+    End Property
+
+    Public Function Clone()
+        Return ColClone(Me)
+    End Function
+    Private Function ColClone(core)
+        Dim jsc, i
+        jsc = New jsCore
+        jsc.Kind = core.Kind
+        For Each i In core.Collection
+            If IsArray(core(i)) Then
+                jsc(i) = ColClone(core(i))
+            Else
+                jsc(i) = core(i)
+            End If
+        Next
+        Return jsc
+    End Function
+End Class
+
+Module FuncionesJson
+
+    Const JSON_OBJECT = 0
+    Const JSON_ARRAY = 1
+
+    Function jsObject()
+        Dim jsObjectNew = New jsCore
+        jsObjectNew.Kind = JSON_OBJECT
+        Return jsObjectNew
+    End Function
+    Function jsArray()
+        Dim jsArrayNew = New jsCore
+        jsArrayNew.Kind = JSON_ARRAY
+        Return jsArrayNew
+    End Function
+    Function toJSON(val)
+        Return (New jsCore).toJSON(val)
+    End Function
+    Function IsObjectCollection(ByVal objItem)
+        If Not IsNothing(objItem) Then
+            If GetType(Dictionary(Of String, Object)) = objItem.GetType Then
+                Return True
+            Else
+                Return False
+            End If
+
+        Else
+            Return False
+        End If
+    End Function
+End Module
+
+
+
